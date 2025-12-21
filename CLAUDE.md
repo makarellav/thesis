@@ -64,7 +64,8 @@ class Agent:
 
 - **Run Linter**: `uv run ruff check .`
 - **Run Type Checker**: `uv run mypy .`
-- **Run Simulation**: (TBD - will be added when simulations are implemented)
+- **Run Sugarscape Demo**: `uv run python -m src.simulations.run_sugarscape`
+- **Run Sugarscape Visualization**: `PYTHONPATH=/home/makarella/kpi/thesis uv run solara run src/simulations/sugarscape_app.py` (Opens browser at http://localhost:8765)
 
 ### Dependency Management
 
