@@ -37,7 +37,7 @@ class SugarscapeHeuristicStrategy(HeuristicStrategy):
 
         best_pos = current_pos
         best_welfare = self._calculate_welfare(current_pos, sugar_layer, spice_layer)
-        best_distance = 0
+        best_distance = float("inf")
 
         for neighbor_cell in neighbors:
             neighbor_pos = neighbor_cell.coordinate

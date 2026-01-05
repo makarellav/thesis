@@ -171,6 +171,7 @@ class SugarscapeModel(mesa.Model):  # type: ignore[misc]
         metabolism_max: int = 5,
         vision_min: int = 1,
         vision_max: int = 5,
+        seed: int | None = None,
     ) -> None:
         """Initialize the Sugarscape model.
 
@@ -184,8 +185,9 @@ class SugarscapeModel(mesa.Model):  # type: ignore[misc]
             metabolism_max: Maximum metabolism rate.
             vision_min: Minimum vision range.
             vision_max: Maximum vision range.
+            seed: Random seed for reproducible simulations. None = random.
         """
-        super().__init__()
+        super().__init__(seed=seed)
         self.width = width
         self.height = height
 

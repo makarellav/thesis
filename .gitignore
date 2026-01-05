@@ -12,3 +12,9 @@ wheels/
 
 # AI
 .claude
+
+# Environment variables
+.env
+
+# Results
+results_*

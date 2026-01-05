@@ -59,6 +59,14 @@ class LLMStrategy(DecisionStrategy):
     data as context and producing actions through prompt engineering.
     """
 
+    def __init__(self, client: Any) -> None:
+        """Initialize LLM strategy with a configured client.
+
+        Args:
+            client: LLM client configured with instructor for structured outputs.
+        """
+        self.client = client
+
     def decide(self, context: dict[str, Any]) -> dict[str, Any]:
         """Make decisions using LLM inference.
 
