@@ -2,12 +2,12 @@
 
 MODEL="${1:-gpt-4o-mini}"
 MODEL_SUFFIX=$(echo "$MODEL" | sed 's/[^a-zA-Z0-9]/_/g')
-OUTPUT_FILE="temperature_comparison_${MODEL_SUFFIX}.txt"
+OUTPUT_FILE="boltzmann_comparison_${MODEL_SUFFIX}.txt"
 
 {
-echo "========================================"
-echo "Temperature Comparison Analysis"
-echo "========================================"
+echo "========================================="
+echo "Boltzmann Temperature Comparison Analysis"
+echo "========================================="
 echo ""
 echo "Model: $MODEL"
 echo ""
@@ -18,11 +18,11 @@ TEMP_LABELS=("0.0 (fully deterministic)" "0.3 (low exploration)" "0.7 (high expl
 for i in "${!TEMPS[@]}"; do
   temp="${TEMPS[$i]}"
   label="${TEMP_LABELS[$i]}"
-  dir="results_multiseed_${MODEL_SUFFIX}_temp${temp}"
+  dir="results_boltzmann_${MODEL_SUFFIX}_temp${temp}"
 
-  echo "========================================"
+  echo "========================================="
   echo "Temperature ${label}"
-  echo "========================================"
+  echo "========================================="
 
   if [ -f "$dir/summary.txt" ]; then
     cat "$dir/summary.txt"
@@ -51,9 +51,9 @@ get_avg() {
 print_table() {
   local title="$1" metric="$2" suffix="$3"
 
-  echo "========================================"
+  echo "========================================="
   echo "Quick Comparison Table - $title"
-  echo "========================================"
+  echo "========================================="
   echo ""
   printf "%-30s | %-12s | %-12s | %-12s\n" "Profile" "Temp 0.0" "Temp 0.3" "Temp 0.7"
   echo "----------------------------------------------------------------------"
@@ -62,7 +62,7 @@ print_table() {
     row="$profile"
 
     for temp in "${TEMPS[@]}"; do
-      dir="results_multiseed_${MODEL_SUFFIX}_temp${temp}"
+      dir="results_boltzmann_${MODEL_SUFFIX}_temp${temp}"
       val=$(get_avg "$dir/summary.txt" "$profile" "$metric")
       row="$row | ${val}${suffix}"
     done
@@ -72,11 +72,11 @@ print_table() {
   echo ""
 }
 
-print_table "Survival Rate" "Survival" "%"
-print_table "Suboptimal Moves" "Suboptimal" "%"
 print_table "Gini Coefficient" "Gini" ""
-print_table "Average Wealth" "Wealth" ""
-print_table "Average Lifespan" "Lifespan" ""
+print_table "Average Wealth" "Avg Wealth" ""
+print_table "Wealth Std Dev" "Std Dev" ""
+print_table "Suboptimal Trade Rate" "Suboptimal" "%"
+print_table "Time per Step" "Time" "s/step"
 } | tee "$OUTPUT_FILE"
 
 echo ""

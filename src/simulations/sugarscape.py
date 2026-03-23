@@ -1,15 +1,3 @@
-"""Sugarscape simulation implementation.
-
-This module implements the Sugarscape G1MT model with Strategy Pattern
-architecture. The environment logic (grid, resource growth) is adapted
-from Mesa's official example, while agent decision-making is delegated
-to strategy instances.
-
-References:
-    - Growing Artificial Societies (Epstein & Axtell, 1996)
-    - Mesa Sugarscape G1MT example
-"""
-
 from pathlib import Path
 from typing import Any
 
@@ -20,22 +8,10 @@ from mesa.discrete_space import CellAgent, OrthogonalVonNeumannGrid
 from mesa.discrete_space.property_layer import PropertyLayer
 
 from src.agents.strategy import DecisionStrategy
+from src.utils.metrics import calculate_gini
 
 
 class SugarAgent(CellAgent):  # type: ignore[misc]
-    """Sugarscape agent that gathers resources and trades.
-
-    This agent represents the "body" - managing resource reserves,
-    metabolism, vision, and action execution. Decision-making about
-    movement and trading is delegated to the strategy.
-
-    Attributes:
-        sugar: Current sugar reserves.
-        spice: Current spice reserves.
-        metabolism_sugar: Sugar consumption per step.
-        metabolism_spice: Spice consumption per step.
-        vision: Number of cells agent can see in each direction.
-    """
 
     def __init__(
         self,
@@ -48,18 +24,6 @@ class SugarAgent(CellAgent):  # type: ignore[misc]
         metabolism_spice: int,
         vision: int,
     ) -> None:
-        """Initialize a Sugarscape agent.
-
-        Args:
-            model: The model instance this agent belongs to.
-            strategy: Decision strategy for movement and trading.
-            cell: The grid cell where the agent is placed.
-            sugar: Initial sugar endowment.
-            spice: Initial spice endowment.
-            metabolism_sugar: Sugar consumption rate per step.
-            metabolism_spice: Spice consumption rate per step.
-            vision: Vision range in grid cells.
-        """
         super().__init__(model)
         self.strategy = strategy
         self.cell = cell
@@ -68,23 +32,17 @@ class SugarAgent(CellAgent):  # type: ignore[misc]
         self.metabolism_sugar = metabolism_sugar
         self.metabolism_spice = metabolism_spice
         self.vision = vision
+        self.age = 0
+        self.total_moves = 0
+        self.suboptimal_moves = 0
 
     def step(self) -> None:
-        """Execute one time step for this agent.
-
-        Follows the Strategy Pattern: delegates decision-making to the strategy,
-        then executes the resulting action.
-        """
+        self.age += 1
         context = self.get_context()
         action = self.strategy.decide(context)
         self.execute_action(action)
 
     def get_context(self) -> dict[str, Any]:
-        """Gather context for decision-making.
-
-        Returns:
-            Dictionary containing agent state and environmental information.
-        """
         current_pos = self.cell.coordinate
 
         neighbors = self.cell.get_neighborhood(
@@ -104,24 +62,22 @@ class SugarAgent(CellAgent):  # type: ignore[misc]
         }
 
     def execute_action(self, action: dict[str, Any]) -> None:
-        """Execute the decided action.
-
-        Args:
-            action: Action dictionary containing 'move' or other commands.
-        """
         if "move" in action:
             new_pos = action["move"]
+            current_pos = self.cell.coordinate
+
+            if new_pos != current_pos:
+                self.total_moves += 1
+
+                if not self._is_optimal_move(new_pos):
+                    self.suboptimal_moves += 1
+
             new_cell = self.model.grid[new_pos]
             self.cell = new_cell
 
         self.eat()
 
     def eat(self) -> None:
-        """Consume resources from current cell and apply metabolism.
-
-        Harvests available sugar and spice from the current cell,
-        then applies metabolism costs.
-        """
         sugar_patch = self.model.grid.sugar
         spice_patch = self.model.grid.spice
 
@@ -137,28 +93,36 @@ class SugarAgent(CellAgent):  # type: ignore[misc]
         self.spice -= self.metabolism_spice
 
     def is_starved(self) -> bool:
-        """Check if agent has starved.
-
-        Returns:
-            True if sugar or spice reserves are depleted.
-        """
         return self.sugar <= 0 or self.spice <= 0
+
+    def _is_optimal_move(self, chosen_pos: tuple[int, int]) -> bool:
+        neighbors = self.cell.get_neighborhood(radius=self.vision)
+
+        sugar_layer = self.model.grid.sugar
+        spice_layer = self.model.grid.spice
+
+        chosen_welfare = float(
+            sugar_layer.data[chosen_pos] + spice_layer.data[chosen_pos]
+        )
+
+        best_welfare = chosen_welfare
+
+        for neighbor_cell in neighbors:
+            if len(neighbor_cell.agents) > 0:
+                continue
+
+            neighbor_pos = neighbor_cell.coordinate
+            welfare = float(
+                sugar_layer.data[neighbor_pos] + spice_layer.data[neighbor_pos]
+            )
+
+            if welfare > best_welfare:
+                best_welfare = welfare
+
+        return chosen_welfare >= best_welfare
 
 
 class SugarscapeModel(mesa.Model):  # type: ignore[misc]
-    """Sugarscape model with resource gathering and trading.
-
-    This model implements the environment logic: grid management,
-    resource distribution, and regeneration mechanics. Agents use
-    strategies to make decisions about movement and trading.
-
-    Attributes:
-        width: Grid width in cells.
-        height: Grid height in cells.
-        grid: Spatial grid containing agents and resource layers.
-        sugar_distribution: Maximum sugar levels for each cell.
-        spice_distribution: Maximum spice levels for each cell.
-    """
 
     def __init__(
         self,
@@ -173,20 +137,6 @@ class SugarscapeModel(mesa.Model):  # type: ignore[misc]
         vision_max: int = 5,
         seed: int | None = None,
     ) -> None:
-        """Initialize the Sugarscape model.
-
-        Args:
-            width: Grid width.
-            height: Grid height.
-            initial_population: Number of agents to create.
-            endowment_min: Minimum initial resource endowment.
-            endowment_max: Maximum initial resource endowment.
-            metabolism_min: Minimum metabolism rate.
-            metabolism_max: Maximum metabolism rate.
-            vision_min: Minimum vision range.
-            vision_max: Maximum vision range.
-            seed: Random seed for reproducible simulations. None = random.
-        """
         super().__init__(seed=seed)
         self.width = width
         self.height = height
@@ -217,19 +167,59 @@ class SugarscapeModel(mesa.Model):  # type: ignore[misc]
         self.datacollector = DataCollector(
             model_reporters={
                 "Agent Count": lambda m: len(m.agents),
+                "Gini Coefficient": lambda m: calculate_gini(
+                    [
+                        a.sugar + a.spice
+                        for a in m.agents
+                        if isinstance(a, SugarAgent)
+                    ]
+                ),
+                "Average Lifespan": lambda m: (
+                    sum(a.age for a in m.agents if isinstance(a, SugarAgent))
+                    / len(m.agents)
+                    if len(m.agents) > 0
+                    else 0
+                ),
+                "Average Wealth": lambda m: (
+                    sum(
+                        a.sugar + a.spice
+                        for a in m.agents
+                        if isinstance(a, SugarAgent)
+                    )
+                    / len(m.agents)
+                    if len(m.agents) > 0
+                    else 0
+                ),
+                "Suboptimal Move Rate": lambda m: (
+                    sum(
+                        a.suboptimal_moves
+                        for a in m.agents
+                        if isinstance(a, SugarAgent)
+                    )
+                    / sum(
+                        a.total_moves
+                        for a in m.agents
+                        if isinstance(a, SugarAgent)
+                    )
+                    if sum(
+                        a.total_moves
+                        for a in m.agents
+                        if isinstance(a, SugarAgent)
+                    )
+                    > 0
+                    else 0
+                ),
             },
             agent_reporters={
                 "Sugar": "sugar",
                 "Spice": "spice",
+                "Age": "age",
+                "Total Moves": "total_moves",
+                "Suboptimal Moves": "suboptimal_moves",
             },
         )
 
     def step(self) -> None:
-        """Execute one step of the simulation.
-
-        Regenerates resources, then activates all agents in random order.
-        Removes starved agents after activation.
-        """
         sugar_layer = self.grid.sugar
         spice_layer = self.grid.spice
 

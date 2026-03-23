@@ -17,49 +17,40 @@ from mesa.visualization import (  # noqa: E402
 )
 from mesa.visualization.components import AgentPortrayalStyle  # noqa: E402
 
-from src.simulations.sugarscape import SugarAgent, SugarscapeModel  # noqa: E402
-from src.simulations.sugarscape_llm import (  # noqa: E402
-    LLMConfig,
-    SugarscapeLLMStrategy,
+from src.agents.strategy import DecisionStrategy  # noqa: E402
+from src.simulations.boltzmann import BoltzmannAgent, BoltzmannModel  # noqa: E402
+from src.simulations.boltzmann_llm import (  # noqa: E402
+    BoltzmannLLMConfig,
+    BoltzmannLLMStrategy,
 )
-from src.simulations.sugarscape_strategy import (  # noqa: E402
-    SugarscapeHeuristicStrategy,
+from src.simulations.boltzmann_strategy import (  # noqa: E402
+    BoltzmannHeuristicStrategy,
 )
 
 load_dotenv()
 
 
-def agent_portrayal(agent: SugarAgent) -> AgentPortrayalStyle:
-    if not isinstance(agent, SugarAgent):
+def agent_portrayal(agent: BoltzmannAgent) -> AgentPortrayalStyle:
+    if not isinstance(agent, BoltzmannAgent):
         return AgentPortrayalStyle()
 
-    if agent.is_starved():
-        return AgentPortrayalStyle(
-            color="white",
-            size=0,
-            alpha=0.0,
-        )
+    wealth = agent.wealth
 
-    total_reserves = agent.sugar + agent.spice
-
-    if total_reserves > 80:
-        color = "tab:green"
-        size = 65
-    elif total_reserves > 50:
-        color = "limegreen"
-        size = 60
-    elif total_reserves > 30:
-        color = "gold"
-        size = 55
-    elif total_reserves > 15:
+    if wealth == 0:
+        color = "tab:red"
+        size = 40
+    elif wealth <= 2:
         color = "tab:orange"
         size = 50
+    elif wealth <= 5:
+        color = "gold"
+        size = 60
     else:
-        color = "tab:red"
-        size = 45
+        color = "tab:green"
+        size = 70
 
     marker = "o"
-    if isinstance(agent.strategy, SugarscapeLLMStrategy):
+    if isinstance(agent.strategy, BoltzmannLLMStrategy):
         marker = "s"
 
     return AgentPortrayalStyle(
@@ -71,8 +62,8 @@ def agent_portrayal(agent: SugarAgent) -> AgentPortrayalStyle:
 
 def create_model(
     mode: str, num_agents: int, llm_profile: str = "optimized"
-) -> SugarscapeModel:
-    model = SugarscapeModel(width=50, height=50)
+) -> BoltzmannModel:
+    model = BoltzmannModel(width=10, height=10)
 
     llm_client = None
     async_llm_client = None
@@ -87,78 +78,65 @@ def create_model(
             async_llm_client = instructor.from_openai(async_openai_client)
 
             if llm_profile == "baseline":
-                llm_config = LLMConfig.baseline()
+                llm_config = BoltzmannLLMConfig.baseline()
             elif llm_profile == "optimized_with_reasoning":
-                llm_config = LLMConfig.optimized_with_reasoning()
+                llm_config = BoltzmannLLMConfig.optimized_with_reasoning()
             else:
-                llm_config = LLMConfig.optimized()
+                llm_config = BoltzmannLLMConfig.optimized()
+
+    cells = list(model.grid.all_cells.cells)
 
     for i in range(num_agents):
-        sugar = model.random.randint(25, 50)
-        spice = model.random.randint(25, 50)
-        metabolism_sugar = model.random.randint(1, 5)
-        metabolism_spice = model.random.randint(1, 5)
-        vision = model.random.randint(1, 5)
+        cell = model.random.choice(cells)
 
-        x = model.random.randrange(model.width)
-        y = model.random.randrange(model.height)
-        cell = model.grid[(x, y)]
-
+        strategy: DecisionStrategy
         if mode == "heuristic":
-            strategy = SugarscapeHeuristicStrategy()
+            strategy = BoltzmannHeuristicStrategy(model)
         elif mode == "llm":
             if llm_client is None:
-                strategy = SugarscapeHeuristicStrategy()
+                strategy = BoltzmannHeuristicStrategy(model)
             else:
-                strategy = SugarscapeLLMStrategy(
+                strategy = BoltzmannLLMStrategy(
                     llm_client, verbose=False, config=llm_config
                 )
                 strategy.async_client = async_llm_client
         else:
             if i < num_agents * 0.5:
                 if llm_client is None:
-                    strategy = SugarscapeHeuristicStrategy()
+                    strategy = BoltzmannHeuristicStrategy(model)
                 else:
-                    strategy = SugarscapeLLMStrategy(
+                    strategy = BoltzmannLLMStrategy(
                         llm_client, verbose=False, config=llm_config
                     )
                     strategy.async_client = async_llm_client
             else:
-                strategy = SugarscapeHeuristicStrategy()
+                strategy = BoltzmannHeuristicStrategy(model)
 
-        SugarAgent(
+        BoltzmannAgent(
             model=model,
             strategy=strategy,
             cell=cell,
-            sugar=sugar,
-            spice=spice,
-            metabolism_sugar=metabolism_sugar,
-            metabolism_spice=metabolism_spice,
-            vision=vision,
+            wealth=1,
         )
 
+    model.datacollector.collect(model)
     return model
 
 
-SpaceView = make_space_component(
-    agent_portrayal,
-    propertylayer_portrayal={
-        "sugar": {"color": "orange", "alpha": 0.8, "vmin": 0, "vmax": 4},
-        "spice": {"color": "blue", "alpha": 0.8, "vmin": 0, "vmax": 4},
-    },
-)
-AgentCountPlot = make_plot_component("Agent Count")
+SpaceView = make_space_component(agent_portrayal)
+GiniPlot = make_plot_component("Gini Coefficient")
+WealthPlot = make_plot_component("Average Wealth")
 
 
 @solara.component
-def page():  # noqa: N802
+def page() -> None:  # noqa: N802
     configs = [
         {
-            "name": "Heuristic Agents",
+            "name": "Heuristic Agents (100)",
             "mode": "heuristic",
-            "num_agents": 80,
+            "num_agents": 100,
             "llm_profile": "optimized",
-            "description": "Rule-based agents using welfare maximization",
+            "description": "Classic random movement + random wealth exchange",
         },
         {
             "name": "LLM: Baseline (Unoptimized)",
@@ -172,14 +150,14 @@ def page():  # noqa: N802
             "mode": "llm",
             "num_agents": 10,
             "llm_profile": "optimized",
-            "description": "Short prompts, async calls (fast)",
+            "description": "Short prompts, async calls, no reasoning",
         },
         {
             "name": "LLM: Optimized + Reasoning",
             "mode": "llm",
             "num_agents": 10,
             "llm_profile": "optimized_with_reasoning",
-            "description": "Short prompts, async, chain-of-thought reasoning",
+            "description": "Short prompts, async calls, with reasoning",
         },
         {
             "name": "Mixed Population",
@@ -197,7 +175,7 @@ def page():  # noqa: N802
     )
 
     with solara.Column(style={"width": "100%", "padding": "20px"}):
-        solara.Markdown("# Sugarscape Simulation - Interactive Visualization")
+        solara.Markdown("# Boltzmann Wealth Model - Interactive Visualization")
 
         with solara.Column(
             style={
@@ -212,19 +190,15 @@ def page():  # noqa: N802
             solara.Markdown("### Legend")
             solara.Markdown(
                 """
-                **Agent Health (Color):**
-                - 🟢 Green: Healthy (>80 reserves)
-                - 🟡 Yellow: Moderate (30-80 reserves)
-                - 🟠 Orange: Low (15-30 reserves)
-                - 🔴 Red: Critical (<15 reserves)
+                **Agent Wealth (Color):**
+                - Red: No wealth (0 coins)
+                - Orange: Low (1-2 coins)
+                - Gold: Moderate (3-5 coins)
+                - Green: High (6+ coins)
 
                 **Agent Type (Shape):**
-                - ⚫ Circle: Heuristic agent (rule-based)
-                - ⬛ Square: LLM agent (AI-driven)
-
-                **Background Layers:**
-                - Red overlay: Sugar distribution
-                - Blue overlay: Spice distribution
+                - Circle: Heuristic agent (random exchange)
+                - Square: LLM agent (AI-driven)
                 """
             )
 
@@ -255,12 +229,12 @@ def page():  # noqa: N802
                 api_key = os.getenv("OPENAI_API_KEY")
                 if not api_key:
                     solara.Warning(
-                        "⚠️ OPENAI_API_KEY not found. "
+                        "OPENAI_API_KEY not found. "
                         "LLM agents will fall back to heuristic mode. "
                         "Set your API key in .env file."
                     )
                 else:
-                    solara.Success("✓ LLM API key configured")
+                    solara.Success("LLM API key configured")
 
         model = create_model(
             mode=selected_config["mode"],
@@ -270,7 +244,7 @@ def page():  # noqa: N802
 
         SolaraViz(
             model,
-            components=[SpaceView, AgentCountPlot],
+            components=[SpaceView, GiniPlot, WealthPlot],
             agent_portrayal=agent_portrayal,
             name=selected_config["name"],
         )

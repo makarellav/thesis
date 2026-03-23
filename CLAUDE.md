@@ -120,7 +120,7 @@ thesis/
 
 1. **Type Hints**: All functions and methods must include type annotations
 2. **Strategy Pattern**: Mandatory for all agent decision-making logic
-3. **Documentation**: Clear docstrings for all public interfaces
+3. **No Docstrings or Comments**: Do NOT write docstrings (module, class, or method level) or inline comments. Code should be self-explanatory through clear naming. Only exception: `# noqa` and `# type: ignore` linter directives.
 4. **Testing**: (TBD - test framework to be added)
 5. **Code Quality**: Pass ruff and mypy checks before commits
 

@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -13,7 +14,7 @@ from src.utils.decision_logger import (
 
 
 @dataclass
-class LLMConfig:
+class VirusLLMConfig:
     prompt_style: str = "short"
     include_reasoning: bool = False
     use_async: bool = True
@@ -22,7 +23,7 @@ class LLMConfig:
     model: str = "gpt-4o-mini"
 
     @classmethod
-    def baseline(cls, temperature: float = 0.1) -> "LLMConfig":
+    def baseline(cls, temperature: float = 0.1) -> "VirusLLMConfig":
         return cls(
             prompt_style="long",
             include_reasoning=True,
@@ -32,7 +33,7 @@ class LLMConfig:
         )
 
     @classmethod
-    def optimized(cls, temperature: float = 0.1) -> "LLMConfig":
+    def optimized(cls, temperature: float = 0.1) -> "VirusLLMConfig":
         return cls(
             prompt_style="short",
             include_reasoning=False,
@@ -42,7 +43,9 @@ class LLMConfig:
         )
 
     @classmethod
-    def optimized_with_reasoning(cls, temperature: float = 0.1) -> "LLMConfig":
+    def optimized_with_reasoning(
+        cls, temperature: float = 0.1
+    ) -> "VirusLLMConfig":
         return cls(
             prompt_style="short",
             include_reasoning=True,
@@ -52,28 +55,53 @@ class LLMConfig:
         )
 
 
-class SugarscapeAction(BaseModel):
-    move_x: int = Field(description="Target X coordinate")
-    move_y: int = Field(description="Target Y coordinate")
+class Direction(str, Enum):
+    N = "N"
+    NE = "NE"
+    E = "E"
+    SE = "SE"
+    S = "S"
+    SW = "SW"
+    W = "W"
+    NW = "NW"
+    STAY = "STAY"
 
 
-class SugarscapeActionWithReasoning(BaseModel):
+DIRECTION_OFFSETS: dict[str, tuple[int, int]] = {
+    "N": (0, 1),
+    "NE": (1, 1),
+    "E": (1, 0),
+    "SE": (1, -1),
+    "S": (0, -1),
+    "SW": (-1, -1),
+    "W": (-1, 0),
+    "NW": (-1, 1),
+    "STAY": (0, 0),
+}
+
+
+class VirusAction(BaseModel):
+    direction: Direction = Field(description="Direction to move")
+    interact: bool = Field(description="Whether to interact with neighbors")
+
+
+class VirusActionWithReasoning(BaseModel):
     reasoning: str = Field(description="Brief explanation of decision")
-    move_x: int = Field(description="Target X coordinate")
-    move_y: int = Field(description="Target Y coordinate")
+    direction: Direction = Field(description="Direction to move")
+    interact: bool = Field(description="Whether to interact with neighbors")
 
 
-class SugarscapeLLMStrategy(LLMStrategy):
+class VirusLLMStrategy(LLMStrategy):
     def __init__(
         self,
         client: Any,
         verbose: bool = False,
-        config: LLMConfig | None = None,
+        config: VirusLLMConfig | None = None,
         logger: DecisionLogger | None = None,
     ) -> None:
         super().__init__(client)
         self.verbose = verbose
-        self.config = config if config is not None else LLMConfig.optimized()
+        self.config = config if config is not None else VirusLLMConfig.optimized()
         self.async_client: Any = None
         self.logger = logger
 
@@ -86,96 +114,56 @@ class SugarscapeLLMStrategy(LLMStrategy):
 
     async def decide_async(self, context: dict[str, Any]) -> dict[str, Any]:
         current_pos = context["position"]
-        sugar = context["sugar"]
-        spice = context["spice"]
-        metabolism_sugar = context["metabolism_sugar"]
-        metabolism_spice = context["metabolism_spice"]
-        neighbors = context["neighbors"]
-        grid = context["grid"]
-
-        neighbor_options = []
-        for neighbor_cell in neighbors:
-            neighbor_pos = neighbor_cell.coordinate
-            is_occupied = len(neighbor_cell.agents) > 0
-
-            sugar_at_pos = grid.sugar.data[neighbor_pos]
-            spice_at_pos = grid.spice.data[neighbor_pos]
-
-            neighbor_options.append(
-                {
-                    "position": neighbor_pos,
-                    "sugar": int(sugar_at_pos),
-                    "spice": int(spice_at_pos),
-                    "occupied": is_occupied,
-                    "distance": abs(current_pos[0] - neighbor_pos[0])
-                    + abs(current_pos[1] - neighbor_pos[1]),
-                }
-            )
-
-        current_sugar = grid.sugar.data[current_pos]
-        current_spice = grid.spice.data[current_pos]
-        neighbor_options.append(
-            {
-                "position": current_pos,
-                "sugar": int(current_sugar),
-                "spice": int(current_spice),
-                "occupied": False,
-                "distance": 0,
-            }
-        )
+        state = context["state"]
+        infected_neighbors = context["infected_neighbors"]
+        susceptible_neighbors = context["susceptible_neighbors"]
+        resistant_neighbors = context["resistant_neighbors"]
+        total_neighbors = context["total_neighbors"]
+        infection_risk = context["infection_risk"]
+        grid_width = context["grid_width"]
+        grid_height = context["grid_height"]
 
         if self.config.prompt_style == "long":
             system_prompt = (
-                f"You are an agent in a Sugarscape simulation environment. "
-                f"Your goal is to survive by collecting sugar and spice resources. "
-                f"Each turn, you consume {metabolism_sugar} units of sugar and "
-                f"{metabolism_spice} units of spice due to your metabolism. "
-                f"If either resource reaches zero, you will die. "
-                f"You should move to locations that maximize your resource collection "
-                f"and ensure long-term survival."
+                "You are an agent in a virus spread simulation. "
+                f"Your current state is {state}. "
+                "Each turn, you move to a neighboring cell and decide "
+                "whether to interact with others. "
+                "If you are SUSCEPTIBLE, avoid infected neighbors. "
+                "If you are INFECTED, consider self-isolating (don't interact) "
+                "to reduce spread. "
+                "If you are RESISTANT, you are immune and can move freely. "
+                "Choose a direction (N/NE/E/SE/S/SW/W/NW/STAY) and whether "
+                "to interact."
             )
 
-            pos_descriptions = []
-            for opt in neighbor_options:
-                if opt["occupied"]:
-                    pos_descriptions.append(
-                        f"Position {opt['position']}: OCCUPIED (cannot move here)"
-                    )
-                else:
-                    pos_descriptions.append(
-                        f"Position {opt['position']}: Sugar={opt['sugar']}, "
-                        f"Spice={opt['spice']}, Distance={opt['distance']}"
-                    )
-
             user_prompt = (
-                f"Current Status:\n"
-                f"- Your position: {current_pos}\n"
-                f"- Your sugar: {sugar}\n"
-                f"- Your spice: {spice}\n\n"
-                f"Available moves:\n" + "\n".join(pos_descriptions) + "\n\n"
-                "Choose the best position to move to and explain your reasoning."
+                f"Your state: {state}\n"
+                f"Position: {current_pos}\n"
+                f"Infected neighbors: {infected_neighbors}\n"
+                f"Susceptible neighbors: {susceptible_neighbors}\n"
+                f"Resistant neighbors: {resistant_neighbors}\n"
+                f"Total neighbors: {total_neighbors}\n"
+                f"Infection risk: {infection_risk:.2f}\n\n"
+                "Choose direction and whether to interact."
             )
         else:
             system_prompt = (
-                f"Sugarscape agent. Survive by collecting sugar+spice. "
-                f"You use {metabolism_sugar}S+{metabolism_spice}Sp/turn. "
-                f"Die if either reaches 0. Pick best move."
+                f"Virus sim agent. State:{state}. "
+                "Move (N/NE/E/SE/S/SW/W/NW/STAY) and interact(true/false). "
+                "Susceptible: avoid infected. Infected: self-isolate."
             )
 
-            pos_list = []
-            for opt in neighbor_options:
-                if opt["occupied"]:
-                    continue
-                pos_list.append(f"{opt['position']}:S{opt['sugar']},Sp{opt['spice']}")
-
             user_prompt = (
-                f"You:{current_pos} S{sugar},Sp{spice} Moves:{','.join(pos_list)}"
+                f"State:{state} Pos:{current_pos} "
+                f"Inf:{infected_neighbors} Sus:{susceptible_neighbors} "
+                f"Res:{resistant_neighbors} Risk:{infection_risk:.2f}"
             )
 
         response_model = (
-            SugarscapeActionWithReasoning
+            VirusActionWithReasoning
             if self.config.include_reasoning
-            else SugarscapeAction
+            else VirusAction
         )
 
         start_ms = measure_latency()
@@ -204,26 +192,27 @@ class SugarscapeLLMStrategy(LLMStrategy):
                     temperature=self.config.temperature,
                 )
 
-            chosen_pos = (response.move_x, response.move_y)
+            dx, dy = DIRECTION_OFFSETS[response.direction.value]
+            new_x = (current_pos[0] + dx) % grid_width
+            new_y = (current_pos[1] + dy) % grid_height
+            new_pos = (new_x, new_y)
 
-            valid_positions = [
-                opt["position"] for opt in neighbor_options if not opt["occupied"]
-            ]
-
-            if chosen_pos not in valid_positions:
-                chosen_pos = current_pos
+            action = {"move": new_pos, "interact": response.interact}
 
             if self.verbose:
                 agent_id = context.get("agent_id", "?")
+                interact_str = "interact" if response.interact else "isolate"
                 if self.config.include_reasoning and hasattr(response, "reasoning"):
                     print(
-                        f"Agent {agent_id} at {current_pos} → {chosen_pos} "
+                        f"Agent {agent_id} [{state}] → {new_pos} "
+                        f"{interact_str} "
                         f"(reasoning: {response.reasoning})"
                     )
                 else:
-                    print(f"Agent {agent_id} at {current_pos} → {chosen_pos}")
-
-            action = {"move": chosen_pos}
+                    print(
+                        f"Agent {agent_id} [{state}] → {new_pos} "
+                        f"{interact_str}"
+                    )
 
             if self.logger is not None:
                 elapsed_ms = measure_latency() - start_ms
@@ -234,7 +223,7 @@ class SugarscapeLLMStrategy(LLMStrategy):
                 )
                 self.logger.log_decision(
                     agent_id=context.get("agent_id", 0),
-                    agent_type="sugar_agent",
+                    agent_type=state,
                     context=make_serializable_context(context),
                     action=action,
                     strategy="llm",
@@ -247,8 +236,16 @@ class SugarscapeLLMStrategy(LLMStrategy):
             return action
 
         except Exception as e:
-            print(f"LLM call failed: {e}. Agent staying at current position.")
-            fallback = {"move": current_pos}
+            import sys
+            import traceback
+
+            print(
+                f"\n[LLM ERROR] {type(e).__name__}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            traceback.print_exc(file=sys.stderr)
+            fallback = {"move": current_pos, "interact": False}
             if self.logger is not None:
                 self.logger.log_error(
                     agent_id=context.get("agent_id", 0),

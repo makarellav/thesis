@@ -17,50 +17,31 @@ from mesa.visualization import (  # noqa: E402
 )
 from mesa.visualization.components import AgentPortrayalStyle  # noqa: E402
 
-from src.simulations.sugarscape import SugarAgent, SugarscapeModel  # noqa: E402
-from src.simulations.sugarscape_llm import (  # noqa: E402
-    LLMConfig,
-    SugarscapeLLMStrategy,
+from src.agents.strategy import DecisionStrategy  # noqa: E402
+from src.simulations.virus import (  # noqa: E402
+    VirusAgent,
+    VirusModel,
+    VirusState,
 )
-from src.simulations.sugarscape_strategy import (  # noqa: E402
-    SugarscapeHeuristicStrategy,
-)
+from src.simulations.virus_llm import VirusLLMConfig, VirusLLMStrategy  # noqa: E402
+from src.simulations.virus_strategy import VirusHeuristicStrategy  # noqa: E402
 
 load_dotenv()
 
 
-def agent_portrayal(agent: SugarAgent) -> AgentPortrayalStyle:
-    if not isinstance(agent, SugarAgent):
+def agent_portrayal(agent: VirusAgent) -> AgentPortrayalStyle:
+    if not isinstance(agent, VirusAgent):
         return AgentPortrayalStyle()
 
-    if agent.is_starved():
-        return AgentPortrayalStyle(
-            color="white",
-            size=0,
-            alpha=0.0,
-        )
-
-    total_reserves = agent.sugar + agent.spice
-
-    if total_reserves > 80:
+    if agent.state == VirusState.SUSCEPTIBLE:
         color = "tab:green"
-        size = 65
-    elif total_reserves > 50:
-        color = "limegreen"
-        size = 60
-    elif total_reserves > 30:
-        color = "gold"
-        size = 55
-    elif total_reserves > 15:
-        color = "tab:orange"
-        size = 50
-    else:
+    elif agent.state == VirusState.INFECTED:
         color = "tab:red"
-        size = 45
+    else:
+        color = "tab:blue"
 
-    marker = "o"
-    if isinstance(agent.strategy, SugarscapeLLMStrategy):
-        marker = "s"
+    marker = "s" if isinstance(agent.strategy, VirusLLMStrategy) else "o"
+    size = 60
 
     return AgentPortrayalStyle(
         color=color,
@@ -70,9 +51,15 @@ def agent_portrayal(agent: SugarAgent) -> AgentPortrayalStyle:
 
 
 def create_model(
-    mode: str, num_agents: int, llm_profile: str = "optimized"
-) -> SugarscapeModel:
-    model = SugarscapeModel(width=50, height=50)
+    mode: str,
+    num_agents: int = 100,
+    initial_infected: int = 5,
+    llm_profile: str = "optimized",
+) -> VirusModel:
+    width = 10 if mode in ["llm", "mixed"] else 20
+    height = 10 if mode in ["llm", "mixed"] else 20
+
+    model = VirusModel(width=width, height=height)
 
     llm_client = None
     async_llm_client = None
@@ -87,83 +74,77 @@ def create_model(
             async_llm_client = instructor.from_openai(async_openai_client)
 
             if llm_profile == "baseline":
-                llm_config = LLMConfig.baseline()
+                llm_config = VirusLLMConfig.baseline()
             elif llm_profile == "optimized_with_reasoning":
-                llm_config = LLMConfig.optimized_with_reasoning()
+                llm_config = VirusLLMConfig.optimized_with_reasoning()
             else:
-                llm_config = LLMConfig.optimized()
+                llm_config = VirusLLMConfig.optimized()
+
+    cells = list(model.grid.all_cells.cells)
 
     for i in range(num_agents):
-        sugar = model.random.randint(25, 50)
-        spice = model.random.randint(25, 50)
-        metabolism_sugar = model.random.randint(1, 5)
-        metabolism_spice = model.random.randint(1, 5)
-        vision = model.random.randint(1, 5)
+        cell = model.random.choice(cells)
+        state = (
+            VirusState.INFECTED if i < initial_infected
+            else VirusState.SUSCEPTIBLE
+        )
 
-        x = model.random.randrange(model.width)
-        y = model.random.randrange(model.height)
-        cell = model.grid[(x, y)]
-
+        strategy: DecisionStrategy
         if mode == "heuristic":
-            strategy = SugarscapeHeuristicStrategy()
+            strategy = VirusHeuristicStrategy(model)
         elif mode == "llm":
             if llm_client is None:
-                strategy = SugarscapeHeuristicStrategy()
+                strategy = VirusHeuristicStrategy(model)
             else:
-                strategy = SugarscapeLLMStrategy(
+                strategy = VirusLLMStrategy(
                     llm_client, verbose=False, config=llm_config
                 )
                 strategy.async_client = async_llm_client
         else:
             if i < num_agents * 0.5:
                 if llm_client is None:
-                    strategy = SugarscapeHeuristicStrategy()
+                    strategy = VirusHeuristicStrategy(model)
                 else:
-                    strategy = SugarscapeLLMStrategy(
+                    strategy = VirusLLMStrategy(
                         llm_client, verbose=False, config=llm_config
                     )
                     strategy.async_client = async_llm_client
             else:
-                strategy = SugarscapeHeuristicStrategy()
+                strategy = VirusHeuristicStrategy(model)
 
-        SugarAgent(
+        VirusAgent(
             model=model,
             strategy=strategy,
             cell=cell,
-            sugar=sugar,
-            spice=spice,
-            metabolism_sugar=metabolism_sugar,
-            metabolism_spice=metabolism_spice,
-            vision=vision,
+            state=state,
         )
 
+    model.datacollector.collect(model)
     return model
 
 
-SpaceView = make_space_component(
-    agent_portrayal,
-    propertylayer_portrayal={
-        "sugar": {"color": "orange", "alpha": 0.8, "vmin": 0, "vmax": 4},
-        "spice": {"color": "blue", "alpha": 0.8, "vmin": 0, "vmax": 4},
-    },
-)
-AgentCountPlot = make_plot_component("Agent Count")
+SpaceView = make_space_component(agent_portrayal)
+InfectedPlot = make_plot_component("Infected")
+SusceptiblePlot = make_plot_component("Susceptible")
+ResistantPlot = make_plot_component("Resistant")
 
 
 @solara.component
-def page():  # noqa: N802
+def page() -> None:  # noqa: N802
     configs = [
         {
-            "name": "Heuristic Agents",
+            "name": "Heuristic Agents (100)",
             "mode": "heuristic",
-            "num_agents": 80,
+            "num_agents": 100,
+            "initial_infected": 5,
             "llm_profile": "optimized",
-            "description": "Rule-based agents using welfare maximization",
+            "description": "Classic SIR: random movement + random spread",
         },
         {
             "name": "LLM: Baseline (Unoptimized)",
             "mode": "llm",
-            "num_agents": 5,
+            "num_agents": 10,
+            "initial_infected": 2,
             "llm_profile": "baseline",
             "description": "Verbose prompts, reasoning, sync calls (slowest)",
         },
@@ -171,20 +152,23 @@ def page():  # noqa: N802
             "name": "LLM: Optimized",
             "mode": "llm",
             "num_agents": 10,
+            "initial_infected": 2,
             "llm_profile": "optimized",
-            "description": "Short prompts, async calls (fast)",
+            "description": "Short prompts, async calls, no reasoning",
         },
         {
             "name": "LLM: Optimized + Reasoning",
             "mode": "llm",
             "num_agents": 10,
+            "initial_infected": 2,
             "llm_profile": "optimized_with_reasoning",
-            "description": "Short prompts, async, chain-of-thought reasoning",
+            "description": "Short prompts, async calls, with reasoning",
         },
         {
             "name": "Mixed Population",
             "mode": "mixed",
             "num_agents": 20,
+            "initial_infected": 3,
             "llm_profile": "optimized",
             "description": "50% LLM + 50% heuristic agents",
         },
@@ -197,7 +181,7 @@ def page():  # noqa: N802
     )
 
     with solara.Column(style={"width": "100%", "padding": "20px"}):
-        solara.Markdown("# Sugarscape Simulation - Interactive Visualization")
+        solara.Markdown("# Virus Spread (SIR) Model - Interactive Visualization")
 
         with solara.Column(
             style={
@@ -212,19 +196,14 @@ def page():  # noqa: N802
             solara.Markdown("### Legend")
             solara.Markdown(
                 """
-                **Agent Health (Color):**
-                - 🟢 Green: Healthy (>80 reserves)
-                - 🟡 Yellow: Moderate (30-80 reserves)
-                - 🟠 Orange: Low (15-30 reserves)
-                - 🔴 Red: Critical (<15 reserves)
+                **Agent State (Color):**
+                - Green: Susceptible
+                - Red: Infected
+                - Blue: Resistant
 
                 **Agent Type (Shape):**
-                - ⚫ Circle: Heuristic agent (rule-based)
-                - ⬛ Square: LLM agent (AI-driven)
-
-                **Background Layers:**
-                - Red overlay: Sugar distribution
-                - Blue overlay: Spice distribution
+                - Circle: Heuristic agent
+                - Square: LLM agent
                 """
             )
 
@@ -255,22 +234,23 @@ def page():  # noqa: N802
                 api_key = os.getenv("OPENAI_API_KEY")
                 if not api_key:
                     solara.Warning(
-                        "⚠️ OPENAI_API_KEY not found. "
+                        "OPENAI_API_KEY not found. "
                         "LLM agents will fall back to heuristic mode. "
                         "Set your API key in .env file."
                     )
                 else:
-                    solara.Success("✓ LLM API key configured")
+                    solara.Success("LLM API key configured")
 
         model = create_model(
             mode=selected_config["mode"],
             num_agents=selected_config["num_agents"],
+            initial_infected=selected_config["initial_infected"],
             llm_profile=selected_config["llm_profile"],
         )
 
         SolaraViz(
             model,
-            components=[SpaceView, AgentCountPlot],
+            components=[SpaceView, InfectedPlot, SusceptiblePlot, ResistantPlot],
             agent_portrayal=agent_portrayal,
             name=selected_config["name"],
         )

@@ -4,27 +4,26 @@ import os
 import time
 
 import instructor
-import numpy as np
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
 from src.agents.strategy import DecisionStrategy
-from src.simulations.sugarscape import SugarAgent, SugarscapeModel
-from src.simulations.sugarscape_llm import LLMConfig, SugarscapeLLMStrategy
-from src.simulations.sugarscape_strategy import SugarscapeHeuristicStrategy
+from src.simulations.boltzmann import BoltzmannAgent, BoltzmannModel
+from src.simulations.boltzmann_llm import BoltzmannLLMConfig, BoltzmannLLMStrategy
+from src.simulations.boltzmann_strategy import BoltzmannHeuristicStrategy
 from src.utils.decision_logger import DecisionLogger
 
 load_dotenv()
 
 
-async def run_agents_async(model: SugarscapeModel) -> None:
+async def run_agents_async(model: BoltzmannModel) -> None:
     agents = list(model.agents)
     model.random.shuffle(agents)
 
     tasks = []
     for agent in agents:
-        if isinstance(agent, SugarAgent):
-            if isinstance(agent.strategy, SugarscapeLLMStrategy):
+        if isinstance(agent, BoltzmannAgent):
+            if isinstance(agent.strategy, BoltzmannLLMStrategy):
                 context = agent.get_context()
                 task = agent.strategy.decide_async(context)
                 tasks.append((agent, task))
@@ -39,7 +38,9 @@ async def run_agents_async(model: SugarscapeModel) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Sugarscape simulation")
+    parser = argparse.ArgumentParser(
+        description="Run Boltzmann Wealth Model simulation"
+    )
     parser.add_argument(
         "--mode",
         choices=["heuristic", "llm", "mixed"],
@@ -57,6 +58,24 @@ def main() -> None:
         type=int,
         default=None,
         help="Number of agents (default: 100 for heuristic, 10 for llm/mixed)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=50,
+        help="Number of simulation steps (default: 50)",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=10,
+        help="Grid width (default: 10)",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=10,
+        help="Grid height (default: 10)",
     )
     parser.add_argument(
         "--verbose",
@@ -94,10 +113,7 @@ def main() -> None:
         "--model",
         type=str,
         default="gpt-4o-mini",
-        help=(
-            "OpenAI model to use (default: gpt-4o-mini). "
-            "Try gpt-3.5-turbo if rate limited."
-        ),
+        help="OpenAI model to use (default: gpt-4o-mini)",
     )
     parser.add_argument(
         "--log-decisions",
@@ -113,7 +129,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("Sugarscape Simulation Demo")
+    print("Boltzmann Wealth Model Simulation")
     print("=" * 60)
     print(f"Mode: {args.mode}")
 
@@ -129,13 +145,13 @@ def main() -> None:
 
         temp = args.temperature
         if args.llm_profile == "baseline":
-            llm_config = LLMConfig.baseline(temperature=temp)
+            llm_config = BoltzmannLLMConfig.baseline(temperature=temp)
         elif args.llm_profile == "optimized":
-            llm_config = LLMConfig.optimized(temperature=temp)
+            llm_config = BoltzmannLLMConfig.optimized(temperature=temp)
         elif args.llm_profile == "optimized_with_reasoning":
-            llm_config = LLMConfig.optimized_with_reasoning(temperature=temp)
+            llm_config = BoltzmannLLMConfig.optimized_with_reasoning(temperature=temp)
         else:
-            llm_config = LLMConfig.optimized(temperature=temp)
+            llm_config = BoltzmannLLMConfig.optimized(temperature=temp)
 
         if args.model != "gpt-4o-mini":
             llm_config.model = args.model
@@ -147,7 +163,7 @@ def main() -> None:
         async_openai_client = AsyncOpenAI(api_key=api_key)
         async_llm_client = instructor.from_openai(async_openai_client)
 
-        print("✓ LLM client initialized (gpt-4o-mini)")
+        print("✓ LLM client initialized")
         print(f"  Profile: {args.llm_profile}")
         print(f"  Prompt style: {llm_config.prompt_style}")
         print(f"  Async: {llm_config.use_async}")
@@ -166,69 +182,60 @@ def main() -> None:
         )
         print("Consider using --num-agents with a smaller value (e.g., 10)")
 
-    model = SugarscapeModel(
-        width=50,
-        height=50,
-        initial_population=num_agents,
+    model = BoltzmannModel(
+        width=args.width,
+        height=args.height,
         seed=args.seed,
     )
 
-    print(f"\nInitializing {num_agents} agents...")
+    print(f"\nInitializing {num_agents} agents on {args.width}x{args.height} grid...")
+
+    cells = list(model.grid.all_cells.cells)
 
     logger: DecisionLogger | None = None
     if args.log_decisions:
         seed_str = f"_seed{args.seed}" if args.seed else ""
-        log_path = f"sugarscape_decisions{seed_str}.json"
+        log_path = f"boltzmann_decisions{seed_str}.json"
         logger = DecisionLogger(log_path)
         print(f"  Decision logging enabled → {log_path}")
 
     for i in range(num_agents):
-        sugar = model.random.randint(25, 50)
-        spice = model.random.randint(25, 50)
-        metabolism_sugar = model.random.randint(1, 5)
-        metabolism_spice = model.random.randint(1, 5)
-        vision = model.random.randint(1, 5)
-
-        x = model.random.randrange(model.width)
-        y = model.random.randrange(model.height)
-        cell = model.grid[(x, y)]
+        cell = model.random.choice(cells)
 
         strategy: DecisionStrategy
         if args.mode == "heuristic":
-            strategy = SugarscapeHeuristicStrategy(logger=logger)
+            strategy = BoltzmannHeuristicStrategy(model, logger=logger)
         elif args.mode == "llm":
-            strategy = SugarscapeLLMStrategy(
+            strategy = BoltzmannLLMStrategy(
                 llm_client, verbose=args.verbose, config=llm_config,
                 logger=logger,
             )
             strategy.async_client = async_llm_client
         else:
             if i < num_agents * args.llm_ratio:
-                strategy = SugarscapeLLMStrategy(
+                strategy = BoltzmannLLMStrategy(
                     llm_client, verbose=args.verbose, config=llm_config,
                     logger=logger,
                 )
                 strategy.async_client = async_llm_client
             else:
-                strategy = SugarscapeHeuristicStrategy(logger=logger)
+                strategy = BoltzmannHeuristicStrategy(model, logger=logger)
 
-        SugarAgent(
+        BoltzmannAgent(
             model=model,
             strategy=strategy,
             cell=cell,
-            sugar=sugar,
-            spice=spice,
-            metabolism_sugar=metabolism_sugar,
-            metabolism_spice=metabolism_spice,
-            vision=vision,
+            wealth=1,
         )
 
-    print(f"✓ Created {len(model.agents)} agents")
+    print(f"✓ Created {len(model.agents)} agents (each with 1 coin)")
 
-    num_steps = 50
+    model.datacollector.collect(model)
+
+    num_steps = args.steps
     print(f"\nRunning simulation for {num_steps} steps...")
     print("-" * 60)
-    print(f"{'Step':<8} {'Agents':<12} {'Avg Sugar':<12} {'Avg Spice':<12}")
+    print(f"{'Step':<8} {'Agents':<10} {'Gini':<10} {'Avg Wealth':<12} {'Std Dev':<10}")
     print("-" * 60)
 
     start_time = time.time()
@@ -241,76 +248,46 @@ def main() -> None:
             print(f"Step {step}... ", end="", flush=True)
 
         if args.mode in ["llm", "mixed"]:
-            sugar_layer = model.grid.sugar
-            spice_layer = model.grid.spice
-            sugar_layer.data = np.minimum(
-                sugar_layer.data + 1,
-                model.sugar_distribution,
-            ).astype(int)
-            spice_layer.data = np.minimum(
-                spice_layer.data + 1,
-                model.spice_distribution,
-            ).astype(int)
-
             asyncio.run(run_agents_async(model))
-
-            agents_to_remove = [
-                agent
-                for agent in model.agents
-                if isinstance(agent, SugarAgent) and agent.is_starved()
-            ]
-            for agent in agents_to_remove:
-                model.agents.remove(agent)
-
             model.datacollector.collect(model)
             model.steps += 1
         else:
             model.step()
 
-        agent_count = len(model.agents)
-        if agent_count > 0:
-            sugar_agents = [a for a in model.agents if isinstance(a, SugarAgent)]
-            avg_sugar = sum(a.sugar for a in sugar_agents) / len(sugar_agents)
-            avg_spice = sum(a.spice for a in sugar_agents) / len(sugar_agents)
-        else:
-            avg_sugar = 0
-            avg_spice = 0
+        df = model.datacollector.get_model_vars_dataframe()
+        latest = df.iloc[-1]
 
         if args.mode in ["llm", "mixed"] and not args.verbose:
+            print(f"✓ (Gini={latest['Gini Coefficient']:.3f})")
+        elif step % 10 == 0 or step == num_steps - 1:
             print(
-                f"✓ ({agent_count} agents, Avg: S={avg_sugar:.1f}, Sp={avg_spice:.1f})"
+                f"{step:<8} {int(latest['Agent Count']):<10} "
+                f"{latest['Gini Coefficient']:<10.3f} "
+                f"{latest['Average Wealth']:<12.2f} "
+                f"{latest['Wealth Std Dev']:<10.2f}"
             )
-        elif step % 5 == 0 or agent_count == 0:
-            print(f"{step:<8} {agent_count:<12} {avg_sugar:<12.2f} {avg_spice:<12.2f}")
-
-        if agent_count == 0:
-            print("\n⚠ All agents have starved!")
-            break
 
     end_time = time.time()
     elapsed_time = end_time - start_time
 
     print("-" * 60)
     print("\nSimulation complete!")
-    print(f"Final agent count: {len(model.agents)}")
     print(f"Total execution time: {elapsed_time:.2f} seconds")
-    print(f"Average time per step: {elapsed_time / (step + 1):.3f} seconds")
+    print(f"Average time per step: {elapsed_time / num_steps:.3f} seconds")
 
     df = model.datacollector.get_model_vars_dataframe()
     if not df.empty:
         final_metrics = df.iloc[-1]
-        initial_count = df.iloc[0]["Agent Count"]
 
         print("\n" + "=" * 60)
         print("FINAL METRICS:")
         print("=" * 60)
-        survival_rate = final_metrics['Agent Count'] / initial_count * 100
-        print(f"  Survival Rate: {survival_rate:.1f}%")
-        print(f"  Average Lifespan: {final_metrics['Average Lifespan']:.2f} steps")
+        print(f"  Agent Count: {int(final_metrics['Agent Count'])}")
         print(f"  Gini Coefficient: {final_metrics['Gini Coefficient']:.3f}")
         print(f"  Average Wealth: {final_metrics['Average Wealth']:.2f}")
-        suboptimal_rate = final_metrics['Suboptimal Move Rate']
-        print(f"  Suboptimal Move Rate: {suboptimal_rate:.1%}")
+        print(f"  Wealth Std Dev: {final_metrics['Wealth Std Dev']:.2f}")
+        suboptimal_rate = final_metrics['Suboptimal Trade Rate']
+        print(f"  Suboptimal Trade Rate: {suboptimal_rate:.1%}")
 
     if args.output_csv and not df.empty:
         df.to_csv(args.output_csv, index_label="Step")

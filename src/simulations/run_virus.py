@@ -4,27 +4,26 @@ import os
 import time
 
 import instructor
-import numpy as np
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAI
 
 from src.agents.strategy import DecisionStrategy
-from src.simulations.sugarscape import SugarAgent, SugarscapeModel
-from src.simulations.sugarscape_llm import LLMConfig, SugarscapeLLMStrategy
-from src.simulations.sugarscape_strategy import SugarscapeHeuristicStrategy
+from src.simulations.virus import VirusAgent, VirusModel, VirusState
+from src.simulations.virus_llm import VirusLLMConfig, VirusLLMStrategy
+from src.simulations.virus_strategy import VirusHeuristicStrategy
 from src.utils.decision_logger import DecisionLogger
 
 load_dotenv()
 
 
-async def run_agents_async(model: SugarscapeModel) -> None:
+async def run_agents_async(model: VirusModel) -> None:
     agents = list(model.agents)
     model.random.shuffle(agents)
 
     tasks = []
     for agent in agents:
-        if isinstance(agent, SugarAgent):
-            if isinstance(agent.strategy, SugarscapeLLMStrategy):
+        if isinstance(agent, VirusAgent):
+            if isinstance(agent.strategy, VirusLLMStrategy):
                 context = agent.get_context()
                 task = agent.strategy.decide_async(context)
                 tasks.append((agent, task))
@@ -34,17 +33,18 @@ async def run_agents_async(model: SugarscapeModel) -> None:
     if tasks:
         results = await asyncio.gather(*[task for _, task in tasks])
         for (agent, _), action in zip(tasks, results, strict=True):
-            agent.age += 1
             agent.execute_action(action)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Sugarscape simulation")
+    parser = argparse.ArgumentParser(
+        description="Run Virus Spread (SIR) Model simulation"
+    )
     parser.add_argument(
         "--mode",
         choices=["heuristic", "llm", "mixed"],
         default="heuristic",
-        help="Agent type: heuristic (rule-based), llm (LLM-based), or mixed (both)",
+        help="Agent type: heuristic (rule-based), llm (LLM-based), or mixed",
     )
     parser.add_argument(
         "--llm-ratio",
@@ -57,6 +57,54 @@ def main() -> None:
         type=int,
         default=None,
         help="Number of agents (default: 100 for heuristic, 10 for llm/mixed)",
+    )
+    parser.add_argument(
+        "--initial-infected",
+        type=int,
+        default=None,
+        help="Number of initially infected agents (default: 5 heuristic, 2 llm)",
+    )
+    parser.add_argument(
+        "--virus-spread-chance",
+        type=float,
+        default=0.4,
+        help="Probability of spreading to a neighbor (default: 0.4)",
+    )
+    parser.add_argument(
+        "--virus-check-frequency",
+        type=float,
+        default=0.4,
+        help="Probability of checking infection each step (default: 0.4)",
+    )
+    parser.add_argument(
+        "--recovery-chance",
+        type=float,
+        default=0.3,
+        help="Probability of recovering when checked (default: 0.3)",
+    )
+    parser.add_argument(
+        "--gain-resistance-chance",
+        type=float,
+        default=0.5,
+        help="Probability of resistance after recovery (default: 0.5)",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=50,
+        help="Number of simulation steps (default: 50)",
+    )
+    parser.add_argument(
+        "--width",
+        type=int,
+        default=None,
+        help="Grid width (default: 20 for heuristic, 10 for llm/mixed)",
+    )
+    parser.add_argument(
+        "--height",
+        type=int,
+        default=None,
+        help="Grid height (default: 20 for heuristic, 10 for llm/mixed)",
     )
     parser.add_argument(
         "--verbose",
@@ -94,10 +142,7 @@ def main() -> None:
         "--model",
         type=str,
         default="gpt-4o-mini",
-        help=(
-            "OpenAI model to use (default: gpt-4o-mini). "
-            "Try gpt-3.5-turbo if rate limited."
-        ),
+        help="OpenAI model to use (default: gpt-4o-mini)",
     )
     parser.add_argument(
         "--log-decisions",
@@ -113,7 +158,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("=" * 60)
-    print("Sugarscape Simulation Demo")
+    print("Virus Spread (SIR) Model Simulation")
     print("=" * 60)
     print(f"Mode: {args.mode}")
 
@@ -123,19 +168,19 @@ def main() -> None:
     if args.mode in ["llm", "mixed"]:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            print("\n⚠ Error: OPENAI_API_KEY not found in environment variables!")
+            print("\nError: OPENAI_API_KEY not found in environment variables!")
             print("Please set your API key in the .env file.")
             return
 
         temp = args.temperature
         if args.llm_profile == "baseline":
-            llm_config = LLMConfig.baseline(temperature=temp)
+            llm_config = VirusLLMConfig.baseline(temperature=temp)
         elif args.llm_profile == "optimized":
-            llm_config = LLMConfig.optimized(temperature=temp)
+            llm_config = VirusLLMConfig.optimized(temperature=temp)
         elif args.llm_profile == "optimized_with_reasoning":
-            llm_config = LLMConfig.optimized_with_reasoning(temperature=temp)
+            llm_config = VirusLLMConfig.optimized_with_reasoning(temperature=temp)
         else:
-            llm_config = LLMConfig.optimized(temperature=temp)
+            llm_config = VirusLLMConfig.optimized(temperature=temp)
 
         if args.model != "gpt-4o-mini":
             llm_config.model = args.model
@@ -147,88 +192,106 @@ def main() -> None:
         async_openai_client = AsyncOpenAI(api_key=api_key)
         async_llm_client = instructor.from_openai(async_openai_client)
 
-        print("✓ LLM client initialized (gpt-4o-mini)")
+        print("LLM client initialized")
         print(f"  Profile: {args.llm_profile}")
         print(f"  Prompt style: {llm_config.prompt_style}")
         print(f"  Async: {llm_config.use_async}")
         print(f"  Max tokens: {llm_config.max_tokens}")
         print(f"  Temperature: {llm_config.temperature}")
 
+    if args.width is None:
+        width = 10 if args.mode in ["llm", "mixed"] else 20
+    else:
+        width = args.width
+
+    if args.height is None:
+        height = 10 if args.mode in ["llm", "mixed"] else 20
+    else:
+        height = args.height
+
     if args.num_agents is None:
         num_agents = 10 if args.mode in ["llm", "mixed"] else 100
     else:
         num_agents = args.num_agents
 
-    if args.mode in ["llm", "mixed"] and num_agents > 20:
-        print(
-            f"\n⚠ Warning: Running {num_agents} LLM agents will be slow "
-            f"(~{num_agents} API calls per step)"
-        )
-        print("Consider using --num-agents with a smaller value (e.g., 10)")
+    if args.initial_infected is None:
+        initial_infected = 2 if args.mode in ["llm", "mixed"] else 5
+    else:
+        initial_infected = args.initial_infected
 
-    model = SugarscapeModel(
-        width=50,
-        height=50,
-        initial_population=num_agents,
+    model = VirusModel(
+        width=width,
+        height=height,
+        virus_spread_chance=args.virus_spread_chance,
+        virus_check_frequency=args.virus_check_frequency,
+        recovery_chance=args.recovery_chance,
+        gain_resistance_chance=args.gain_resistance_chance,
         seed=args.seed,
     )
 
-    print(f"\nInitializing {num_agents} agents...")
+    print(f"\nInitializing {num_agents} agents on {width}x{height} grid...")
+    print(f"  Initially infected: {initial_infected}")
+    print(f"  Spread chance: {args.virus_spread_chance}")
+    print(f"  Recovery chance: {args.recovery_chance}")
+    print(f"  Resistance chance: {args.gain_resistance_chance}")
+
+    cells = list(model.grid.all_cells.cells)
 
     logger: DecisionLogger | None = None
     if args.log_decisions:
         seed_str = f"_seed{args.seed}" if args.seed else ""
-        log_path = f"sugarscape_decisions{seed_str}.json"
+        log_path = f"virus_decisions{seed_str}.json"
         logger = DecisionLogger(log_path)
         print(f"  Decision logging enabled → {log_path}")
 
     for i in range(num_agents):
-        sugar = model.random.randint(25, 50)
-        spice = model.random.randint(25, 50)
-        metabolism_sugar = model.random.randint(1, 5)
-        metabolism_spice = model.random.randint(1, 5)
-        vision = model.random.randint(1, 5)
-
-        x = model.random.randrange(model.width)
-        y = model.random.randrange(model.height)
-        cell = model.grid[(x, y)]
+        cell = model.random.choice(cells)
+        state = (
+            VirusState.INFECTED if i < initial_infected
+            else VirusState.SUSCEPTIBLE
+        )
 
         strategy: DecisionStrategy
         if args.mode == "heuristic":
-            strategy = SugarscapeHeuristicStrategy(logger=logger)
+            strategy = VirusHeuristicStrategy(model, logger=logger)
         elif args.mode == "llm":
-            strategy = SugarscapeLLMStrategy(
+            strategy = VirusLLMStrategy(
                 llm_client, verbose=args.verbose, config=llm_config,
                 logger=logger,
             )
             strategy.async_client = async_llm_client
         else:
             if i < num_agents * args.llm_ratio:
-                strategy = SugarscapeLLMStrategy(
+                strategy = VirusLLMStrategy(
                     llm_client, verbose=args.verbose, config=llm_config,
                     logger=logger,
                 )
                 strategy.async_client = async_llm_client
             else:
-                strategy = SugarscapeHeuristicStrategy(logger=logger)
+                strategy = VirusHeuristicStrategy(model, logger=logger)
 
-        SugarAgent(
+        VirusAgent(
             model=model,
             strategy=strategy,
             cell=cell,
-            sugar=sugar,
-            spice=spice,
-            metabolism_sugar=metabolism_sugar,
-            metabolism_spice=metabolism_spice,
-            vision=vision,
+            state=state,
+            virus_spread_chance=args.virus_spread_chance,
+            virus_check_frequency=args.virus_check_frequency,
+            recovery_chance=args.recovery_chance,
+            gain_resistance_chance=args.gain_resistance_chance,
         )
 
-    print(f"✓ Created {len(model.agents)} agents")
+    print(f"Created {len(model.agents)} agents")
 
-    num_steps = 50
+    model.datacollector.collect(model)
+
+    num_steps = args.steps
     print(f"\nRunning simulation for {num_steps} steps...")
     print("-" * 60)
-    print(f"{'Step':<8} {'Agents':<12} {'Avg Sugar':<12} {'Avg Spice':<12}")
+    print(
+        f"{'Step':<8} {'Susceptible':<14} {'Infected':<12} "
+        f"{'Resistant':<12} {'Pct Infected':<14}"
+    )
     print("-" * 60)
 
     start_time = time.time()
@@ -241,76 +304,49 @@ def main() -> None:
             print(f"Step {step}... ", end="", flush=True)
 
         if args.mode in ["llm", "mixed"]:
-            sugar_layer = model.grid.sugar
-            spice_layer = model.grid.spice
-            sugar_layer.data = np.minimum(
-                sugar_layer.data + 1,
-                model.sugar_distribution,
-            ).astype(int)
-            spice_layer.data = np.minimum(
-                spice_layer.data + 1,
-                model.spice_distribution,
-            ).astype(int)
-
             asyncio.run(run_agents_async(model))
-
-            agents_to_remove = [
-                agent
-                for agent in model.agents
-                if isinstance(agent, SugarAgent) and agent.is_starved()
-            ]
-            for agent in agents_to_remove:
-                model.agents.remove(agent)
-
             model.datacollector.collect(model)
             model.steps += 1
         else:
             model.step()
 
-        agent_count = len(model.agents)
-        if agent_count > 0:
-            sugar_agents = [a for a in model.agents if isinstance(a, SugarAgent)]
-            avg_sugar = sum(a.sugar for a in sugar_agents) / len(sugar_agents)
-            avg_spice = sum(a.spice for a in sugar_agents) / len(sugar_agents)
-        else:
-            avg_sugar = 0
-            avg_spice = 0
+        df = model.datacollector.get_model_vars_dataframe()
+        latest = df.iloc[-1]
 
         if args.mode in ["llm", "mixed"] and not args.verbose:
             print(
-                f"✓ ({agent_count} agents, Avg: S={avg_sugar:.1f}, Sp={avg_spice:.1f})"
+                f"done (I={int(latest['Infected'])}, "
+                f"R={int(latest['Resistant'])})"
             )
-        elif step % 5 == 0 or agent_count == 0:
-            print(f"{step:<8} {agent_count:<12} {avg_sugar:<12.2f} {avg_spice:<12.2f}")
-
-        if agent_count == 0:
-            print("\n⚠ All agents have starved!")
-            break
+        elif step % 5 == 0 or step == num_steps - 1:
+            print(
+                f"{step:<8} {int(latest['Susceptible']):<14} "
+                f"{int(latest['Infected']):<12} "
+                f"{int(latest['Resistant']):<12} "
+                f"{latest['Pct Infected']:<14.1f}"
+            )
 
     end_time = time.time()
     elapsed_time = end_time - start_time
 
     print("-" * 60)
     print("\nSimulation complete!")
-    print(f"Final agent count: {len(model.agents)}")
     print(f"Total execution time: {elapsed_time:.2f} seconds")
-    print(f"Average time per step: {elapsed_time / (step + 1):.3f} seconds")
+    print(f"Average time per step: {elapsed_time / num_steps:.3f} seconds")
 
     df = model.datacollector.get_model_vars_dataframe()
     if not df.empty:
         final_metrics = df.iloc[-1]
-        initial_count = df.iloc[0]["Agent Count"]
 
         print("\n" + "=" * 60)
         print("FINAL METRICS:")
         print("=" * 60)
-        survival_rate = final_metrics['Agent Count'] / initial_count * 100
-        print(f"  Survival Rate: {survival_rate:.1f}%")
-        print(f"  Average Lifespan: {final_metrics['Average Lifespan']:.2f} steps")
-        print(f"  Gini Coefficient: {final_metrics['Gini Coefficient']:.3f}")
-        print(f"  Average Wealth: {final_metrics['Average Wealth']:.2f}")
-        suboptimal_rate = final_metrics['Suboptimal Move Rate']
-        print(f"  Suboptimal Move Rate: {suboptimal_rate:.1%}")
+        print(f"  Agent Count: {int(final_metrics['Agent Count'])}")
+        print(f"  Susceptible: {int(final_metrics['Susceptible'])}")
+        print(f"  Infected: {int(final_metrics['Infected'])}")
+        print(f"  Resistant: {int(final_metrics['Resistant'])}")
+        print(f"  Pct Infected: {final_metrics['Pct Infected']:.1f}%")
+        print(f"  Attack Rate: {final_metrics['Attack Rate']:.1f}%")
 
     if args.output_csv and not df.empty:
         df.to_csv(args.output_csv, index_label="Step")
