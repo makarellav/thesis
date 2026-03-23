@@ -16,5 +16,9 @@ wheels/
 # Environment variables
 .env
 
-# Results
-results_*
+# Results (raw JSON/CSV data, large)
+/results_*
+
+# Track figures and summaries
+!figures/
+!summaries/
